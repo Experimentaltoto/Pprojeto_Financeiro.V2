@@ -3,10 +3,16 @@
 Lê o CSV normalizado pelo `finance_normalizer` (fonte Stone) e apresenta um
 recorte de vendas em cartão. É um protótipo de visualização: ainda não lê do
 Supabase, conforme definido no PRD para a versão final.
+
+A planilha original não é versionada (dado financeiro sensível), então os
+dados chegam por upload na própria página — o mesmo fluxo previsto no PRD
+para a versão definitiva. O arquivo original é descartado assim que a
+normalização termina.
 """
 from __future__ import annotations
 
 import sys
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+from finance_normalizer.errors import ImportValidationError  # noqa: E402
 from finance_normalizer.normalizer import normalize_file  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -24,10 +31,14 @@ st.set_page_config(page_title="Vendas (protótipo)", layout="wide")
 st.title("Vendas — protótipo")
 
 
-def gerar_csv() -> None:
+def gerar_csv(origem: Path) -> None:
     NORMALIZED_SALES.parent.mkdir(parents=True, exist_ok=True)
-    count = normalize_file(RAW_STONE, NORMALIZED_SALES, source="stone")
-    st.success(f"{count} vendas normalizadas a partir de {RAW_STONE.name}.")
+    try:
+        count = normalize_file(origem, NORMALIZED_SALES, source="stone")
+    except ImportValidationError as exc:
+        st.error(str(exc))
+        return
+    st.success(f"{count} vendas normalizadas a partir de {origem.name}.")
 
 
 def fmt_brl(valor: Decimal) -> str:
@@ -36,11 +47,21 @@ def fmt_brl(valor: Decimal) -> str:
     return f"R$ {texto}"
 
 
-if st.button("Atualizar dados da Stone"):
-    gerar_csv()
+uploaded = st.file_uploader("Envie a planilha de vendas da Stone (.xlsx)", type="xlsx")
+if uploaded is not None:
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(uploaded.getvalue())
+        tmp_path = Path(tmp.name)
+    try:
+        gerar_csv(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+elif RAW_STONE.exists() and st.button("Usar planilha de amostra (Dados/Vendas_Stone_Set.xlsx)"):
+    gerar_csv(RAW_STONE)
 
 if not NORMALIZED_SALES.exists():
-    gerar_csv()
+    st.info("Envie a planilha de vendas da Stone (.xlsx) acima para ver o dashboard.")
+    st.stop()
 
 df = pd.read_csv(NORMALIZED_SALES, dtype=str)
 df = df[df["record_type"] == "card_sale"].copy()
